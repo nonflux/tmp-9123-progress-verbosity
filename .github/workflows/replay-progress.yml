@@ -45,7 +45,7 @@ jobs:
         working-directory: fullsend
         env:
           REPLAY_STREAM: ${{ github.workspace }}/replay/triage-stream.jsonl
-          REPLAY_LEVEL: ${{ matrix.level == 'unset' && '' || matrix.level }}
+          REPLAY_LEVEL: ${{ matrix.level != 'unset' && matrix.level || '' }}
         run: |
           cp ../replay/zz_replay_test.go internal/runtime/zz_replay_test.go
           go test -tags replay -run TestReplayProgress -count=1 ./internal/runtime/ -v 2>&1 | tee "$RUNNER_TEMP/replay.log"
@@ -60,4 +60,14 @@ jobs:
           grep -qF '::error title=Agent Error::agent terminated with error (subtype: error_during_execution)' "$log" || { echo "missing quiet error annotation"; fail=1; }
           grep -qF -- '→ Result: success' "$log" || { echo "missing result line"; fail=1; }
           [ "$fail" = 0 ] && echo "quiet check passed: no notices, tool lines, replies or agent error text; error type and result kept"
+          exit "$fail"
+      - name: Check full output
+        if: matrix.level != 'quiet'
+        run: |
+          log="$RUNNER_TEMP/replay.log"
+          fail=0
+          for pat in '::notice::Skill' '⚙ Bash: R=nonflux/tmp-9123-progress-verbosity' '💬 I triaged issue #1' '::error title=Agent Error (triage-replay.jsonl)::REPLAY-AGENT-TEXT'; do
+            grep -qF -- "$pat" "$log" || { echo "missing at ${{ matrix.level }}: $pat"; fail=1; }
+          done
+          [ "$fail" = 0 ] && echo "${{ matrix.level }} check passed: notices, tool lines, reply and full error text all printed"
           exit "$fail"
