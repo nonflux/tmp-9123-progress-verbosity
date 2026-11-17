@@ -1,0 +1,63 @@
+# Replays a recorded agent stream through the fullsend build under test
+# (fullsend-ai/fullsend PR #9604, ADR 0163) at each progress level, so this
+# run page shows what `fullsend run` prints and annotates at that level.
+# No secrets and no model call: the stream in replay/ was recorded from a
+# local triage run on issue #1 of this repo, with run ids and account
+# names replaced.
+name: replay-progress
+
+on:
+  workflow_dispatch:
+    inputs:
+      fullsend_ref:
+        description: fullsend commit to test
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        level: [unset, full, quiet]
+    name: replay (${{ matrix.level }})
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ref }}
+          path: fullsend
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: fullsend/go.mod
+          cache-dependency-path: fullsend/go.sum
+      - name: Show the fullsend commit under test
+        working-directory: fullsend
+        run: git log -1 --format='fullsend %H %s'
+      - name: Replay the stream at ${{ matrix.level }}
+        working-directory: fullsend
+        env:
+          REPLAY_STREAM: ${{ github.workspace }}/replay/triage-stream.jsonl
+          REPLAY_LEVEL: ${{ matrix.level == 'unset' && '' || matrix.level }}
+        run: |
+          cp ../replay/zz_replay_test.go internal/runtime/zz_replay_test.go
+          go test -tags replay -run TestReplayProgress -count=1 ./internal/runtime/ -v 2>&1 | tee "$RUNNER_TEMP/replay.log"
+      - name: Check quiet output
+        if: matrix.level == 'quiet'
+        run: |
+          log="$RUNNER_TEMP/replay.log"
+          fail=0
+          for pat in '::notice::' '⚙' '💬' 'REPLAY-AGENT-TEXT' 'gh issue view' 'CONTRIBUTING'; do
+            if grep -qF -- "$pat" "$log"; then echo "found at quiet: $pat"; fail=1; fi
+          done
+          grep -qF '::error title=Agent Error::agent terminated with error (subtype: error_during_execution)' "$log" || { echo "missing quiet error annotation"; fail=1; }
+          grep -qF -- '→ Result: success' "$log" || { echo "missing result line"; fail=1; }
+          [ "$fail" = 0 ] && echo "quiet check passed: no notices, tool lines, replies or agent error text; error type and result kept"
+          exit "$fail"
